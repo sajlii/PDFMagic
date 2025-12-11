@@ -23,7 +23,7 @@ transformers==4.34.0           # required by sentence-transformers
 
 # LangChain + Vector Stores
 langchain==1.1.3
-faiss-cpu==1.7.4               # FAISS local vector store
+faiss-cpu==1.13.1               # FAISS local vector store
 langchain-llama==0.0.17        # Ollama / LLaMA integration if used
 langchain-google-genai==0.0.15
 langchain-community==0.0.79
