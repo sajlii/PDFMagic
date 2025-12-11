@@ -12,10 +12,9 @@ from dotenv import load_dotenv
 
 # PDF Chatbot imports
 from PyPDF2 import PdfReader
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 import google.generativeai as genai
-from langchain.vectorstores import FAISS
+from langchain_community.vectorstores import FAISS
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.chains.question_answering import load_qa_chain
 from langchain.prompts import PromptTemplate
@@ -34,6 +33,9 @@ genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
 app = Flask(__name__)
 CORS(app)  # Enable CORS for React or other frontends
 
+# Global variable to track which embedding type is being used
+CURRENT_EMBEDDING_TYPE = None
+
 # =============================================================================
 # PDF CHATBOT FUNCTIONS
 # =============================================================================
@@ -51,23 +53,81 @@ def get_pdf_chunks(text):
     chunks = text_splitter.split_text(text)
     return chunks
 
+def get_embeddings():
+    """
+    Try embeddings in priority order:
+    1. HuggingFace (FREE, no server needed, works offline)
+    2. Ollama (FREE, requires server running)
+    """
+    global CURRENT_EMBEDDING_TYPE
+    
+    # FIRST: Try HuggingFace (most reliable, no server needed)
+    try:
+        print("🔄 Trying HuggingFace embeddings (FREE, offline, no server needed)...")
+        from langchain_huggingface import HuggingFaceEmbeddings
+        embeddings = HuggingFaceEmbeddings(
+            model_name="sentence-transformers/all-MiniLM-L6-v2",
+            model_kwargs={'device': 'cpu'}
+        )
+        # Test it works
+        test_embed = embeddings.embed_query("test")
+        CURRENT_EMBEDDING_TYPE = "HuggingFace"
+        print(f"✅ Successfully using HuggingFace embeddings (vector size: {len(test_embed)})")
+        return embeddings
+    except Exception as e:
+        print(f"⚠️ HuggingFace embeddings failed: {str(e)[:100]}")
+    
+    # SECOND: Try Ollama (requires server running)
+    try:
+        print("🔄 Trying Ollama embeddings (FREE, local server)...")
+        # First check if Ollama server is running
+        test_response = requests.get("http://localhost:11434/api/tags", timeout=2)
+        if test_response.status_code == 200:
+            from langchain_community.embeddings import OllamaEmbeddings
+            embeddings = OllamaEmbeddings(
+                model="llama3",
+                base_url="http://localhost:11434"
+            )
+            # Test it works
+            test_embed = embeddings.embed_query("test")
+            CURRENT_EMBEDDING_TYPE = "Ollama"
+            print(f"✅ Successfully using Ollama embeddings (vector size: {len(test_embed)})")
+            return embeddings
+        else:
+            print("⚠️ Ollama server not responding properly")
+    except Exception as e:
+        print(f"⚠️ Ollama embeddings failed: {str(e)[:100]}")
+    
+    # If all fail
+    raise Exception("""
+    Could not initialize embeddings. Tried:
+    1. HuggingFace (install: pip install sentence-transformers)
+    2. Ollama (start with: ollama serve)
+    
+    Please install sentence-transformers or start Ollama server.
+    """)
+
 def get_vector_store(text_chunks):
     try:
-        print("Creating embeddings...")
-        embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
+        embeddings = get_embeddings()
         
         print("Creating FAISS vector store...")
         vector_store = CommunityFAISS.from_texts(text_chunks, embedding=embeddings)
         
         print("Saving vector store locally...")
         vector_store.save_local("faiss_index")
-        print("Vector store saved successfully")
+        print(f"✅ Vector store saved successfully using {CURRENT_EMBEDDING_TYPE} embeddings")
         
     except Exception as e:
         print(f"Error in get_vector_store: {str(e)}")
         raise
 
 def get_conversational_chain():
+    """
+    Try models in priority order with ACTUAL testing:
+    1. Google Gemini (best quality)
+    2. Ollama (local fallback)
+    """
     try:
         prompt_template = """
         Answer the question as detailed as possible from the provided context, make sure provide all the details, if the answer is not in context just say, "answer is not available in the context", don't provide the wrong answer.
@@ -76,28 +136,91 @@ def get_conversational_chain():
         Answer:
         """
         
-        # Try different model names in case one doesn't work
-        model_names = [
-            "gemini-1.5-flash",
-            "gemini-1.5-pro",
-            "gemini-1.5-flash-latest",
-            "gemini-1.5-pro-latest",
-            "gemini-pro"
-        ]
-        
         model = None
-        for model_name in model_names:
+        last_error = ""
+        
+        # FIRST: Try Google Gemini with ACTUAL TESTING
+        api_key = os.getenv("GOOGLE_API_KEY")
+        if api_key:
+            print("🔄 Attempting to use Google Gemini...")
+            model_names = [
+                "gemini-2.5-flash",
+                "gemini-2.0-flash",
+                "gemini-flash-latest",
+                "gemini-2.5-pro",
+                "gemini-pro-latest",
+            ]
+            
+            for model_name in model_names:
+                try:
+                    print(f"   Trying model: {model_name}")
+                    test_model = ChatGoogleGenerativeAI(
+                        model=model_name,
+                        temperature=0.3,
+                        google_api_key=api_key,
+                        convert_system_message_to_human=True
+                    )
+                    
+                    # 🔥 NEW: Actually test the model works!
+                    print(f"   Testing {model_name} with sample query...")
+                    try:
+                        test_response = test_model.invoke("test")
+                        print(f"   ✅ Model test successful!")
+                        model = test_model
+                        print(f"✅ Successfully using Google Gemini: {model_name}")
+                        break
+                    except Exception as test_error:
+                        error_str = str(test_error)
+                        if "404" in error_str:
+                            print(f"   ⚠️ Model {model_name} not found (404)")
+                        elif "429" in error_str or "quota" in error_str.lower():
+                            print(f"   ⚠️ Quota exceeded for {model_name}")
+                        else:
+                            print(f"   ❌ Test failed: {error_str[:100]}")
+                        continue
+                        
+                except Exception as e:
+                    error_str = str(e)
+                    last_error = error_str
+                    print(f"   ❌ {model_name} initialization failed: {error_str[:100]}")
+                    continue
+        else:
+            print("⚠️ No Google API key found in .env file")
+        
+        # SECOND: Try Ollama if Gemini failed
+        if model is None:
+            print("🦙 All Gemini models failed, trying Ollama as fallback...")
             try:
-                print(f"Trying model: {model_name}")
-                model = ChatGoogleGenerativeAI(model=model_name, temperature=0.3)
-                print(f"Successfully initialized model: {model_name}")
-                break
+                # Test if Ollama is running
+                test_response = requests.get("http://localhost:11434/api/tags", timeout=2)
+                if test_response.status_code == 200:
+                    from langchain_ollama import ChatOllama
+                    model = ChatOllama(
+                        model="llama3"
+                    )
+                    # Test Ollama works
+                    print("   Testing Ollama with sample query...")
+                    test_response = model.invoke("test")
+                    print("✅ Successfully using Ollama for chat responses")
+                else:
+                    print("⚠️ Ollama server not responding properly")
             except Exception as e:
-                print(f"Failed to initialize model {model_name}: {str(e)}")
-                continue
+                print(f"⚠️ Ollama not available: {str(e)[:100]}")
         
         if model is None:
-            raise Exception("Could not initialize any Google AI model. Check your API key and quota.")
+            error_msg = f"""
+            Could not initialize any chat model.
+            
+            Solutions:
+            1. Fix Google API key or wait for quota reset
+               Check usage: https://ai.dev/usage?tab=rate-limit
+            2. Start Ollama: 
+               - Run 'ollama serve' in terminal
+               - Run 'ollama pull llama3'
+            
+            Last error: {last_error[:200]}
+            """
+            raise Exception(error_msg)
         
         prompt = PromptTemplate(template=prompt_template, input_variables=["context", "question"])
         chain = load_qa_chain(model, chain_type="stuff", prompt=prompt)
@@ -229,31 +352,41 @@ def extract_article_content(url):
         return ""
 
 def generate_ai_content(topic, scraped_content=""):
-    """Generate content using local Ollama model"""
+    """Generate content using available AI model"""
     try:
-        prompt = f"""
-        Create a comprehensive, informative article about "{topic}". 
+        # Try Gemini first
+        api_key = os.getenv("GOOGLE_API_KEY")
+        if api_key:
+            try:
+                model = genai.GenerativeModel('gemini-1.5-flash')
+                prompt = f"""
+                Create a comprehensive, informative article about "{topic}". 
 
-        The article should include:
-        1. An introduction explaining what {topic} is
-        2. Key concepts and definitions
-        3. Main applications and use cases
-        4. Benefits and advantages
-        5. Challenges or limitations
-        6. Current trends and future outlook
-        7. Conclusion
+                The article should include:
+                1. An introduction explaining what {topic} is
+                2. Key concepts and definitions
+                3. Main applications and use cases
+                4. Benefits and advantages
+                5. Challenges or limitations
+                6. Current trends and future outlook
+                7. Conclusion
 
-        Additional context from web sources:
-        {scraped_content[:1000] if scraped_content else "No additional context available"}
+                Additional context from web sources:
+                {scraped_content[:1000] if scraped_content else "No additional context available"}
 
-        Make the content educational, well-structured, and approximately 800-1000 words.
-        """
-
+                Make the content educational, well-structured, and approximately 800-1000 words.
+                """
+                response = model.generate_content(prompt)
+                return response.text
+            except Exception as e:
+                print(f"Gemini failed, trying Ollama: {str(e)[:100]}")
+        
+        # Try Ollama
         response = requests.post(
             "http://localhost:11434/api/generate",
             json={
                 "model": "llama3",
-                "prompt": prompt,
+                "prompt": f"Create a comprehensive article about {topic}. Include introduction, key concepts, applications, benefits, challenges, trends, and conclusion. Make it educational and well-structured (800-1000 words).\n\nContext: {scraped_content[:1000]}",
                 "stream": False
             },
             timeout=60
@@ -266,7 +399,7 @@ def generate_ai_content(topic, scraped_content=""):
             return generate_fallback_content(topic, scraped_content)
 
     except Exception as e:
-        print(f"Error using local model: {e}")
+        print(f"Error using AI models: {e}")
         return generate_fallback_content(topic, scraped_content)
 
 def generate_fallback_content(topic, scraped_content=""):
@@ -291,11 +424,11 @@ Main Applications and Use Cases:
 {topic} finds applications across multiple industries and sectors. The versatility of {topic} makes it valuable in various contexts, from theoretical research to practical implementation.
 
 Benefits and Advantages:
-• Enhanced understanding of complex systems
-• Improved efficiency in relevant processes
-• Better decision-making capabilities
-• Innovation opportunities
-• Competitive advantages in the market
+- Enhanced understanding of complex systems
+- Improved efficiency in relevant processes
+- Better decision-making capabilities
+- Innovation opportunities
+- Competitive advantages in the market
 
 Current Trends and Future Outlook:
 The field of {topic} continues to evolve with technological advances and changing market demands. Current research and development efforts are focused on improving existing methodologies and exploring new possibilities.
@@ -323,21 +456,21 @@ The development of {topic} has been shaped by various factors including technolo
 
 Current Applications:
 {topic} finds applications in numerous sectors and continues to evolve with technological advances. Key areas include:
-• Research and development
-• Industrial applications
-• Educational purposes
-• Commercial implementations
-• Innovation initiatives
+- Research and development
+- Industrial applications
+- Educational purposes
+- Commercial implementations
+- Innovation initiatives
 
 Technical Aspects:
 The technical components of {topic} involve various methodologies, tools, and approaches that contribute to its effectiveness and applicability.
 
 Benefits and Advantages:
-• Improved understanding of complex systems
-• Enhanced problem-solving capabilities
-• Better resource utilization
-• Innovation opportunities
-• Competitive advantages
+- Improved understanding of complex systems
+- Enhanced problem-solving capabilities
+- Better resource utilization
+- Innovation opportunities
+- Competitive advantages
 
 Challenges and Considerations:
 While {topic} offers numerous benefits, there are challenges that need to be addressed including technical limitations, resource requirements, and implementation complexities.
@@ -398,7 +531,7 @@ def create_pdf_with_content(title, content):
             if paragraph.strip():
                 text = paragraph.strip()
                 # Handle bullet points
-                if text.startswith('•'):
+                if text.startswith('•') or text.startswith('-'):
                     pdf.set_font("Arial", "", 10)
                     pdf.multi_cell(0, 6, text)
                     pdf.ln(2)
@@ -445,11 +578,13 @@ def health_check():
     return jsonify({
         "message": "Combined PDF Chat & Creator API is running!",
         "success": True,
+        "embedding_priority": "HuggingFace → Ollama",
+        "chat_priority": "Google Gemini → Ollama",
         "endpoints": {
             "pdf_chatbot": {
-                "upload": "/chatbot/upload",
-                "ask": "/chatbot/ask",
-                "test": "/chatbot/test-api"
+                "upload": "/upload",
+                "ask": "/ask",
+                "test": "/test-api"
             },
             "pdf_creator": {
                 "generate": "/creator/generate_pdf",
@@ -462,33 +597,51 @@ def health_check():
 # PDF CHATBOT ENDPOINTS
 # =============================================================================
 
-@app.route('/chatbot/test-api', methods=['GET'])
+@app.route('/test-api', methods=['GET'])
 def test_chatbot_api():
     try:
-        # Test Google API key
-        embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
+        # Test embeddings
+        print("Testing embeddings...")
+        embeddings = get_embeddings()
         test_result = embeddings.embed_query("test")
+        print(f"✅ Embeddings working! Vector length: {len(test_result)}")
         
-        # Test model initialization
-        model = ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0.3)
+        # Test chat model
+        print("\nTesting chat model...")
+        try:
+            chain = get_conversational_chain()
+            chat_model_info = "Google Gemini or Ollama"
+        except Exception as e:
+            return jsonify({
+                "success": False,
+                "error": f"Chat model failed: {str(e)}",
+                "help": "Add Google API key or start Ollama"
+            }), 500
         
         return jsonify({
             "success": True,
-            "message": "Google API key is working!",
-            "embedding_length": len(test_result)
+            "message": f"✅ System ready! Using {CURRENT_EMBEDDING_TYPE} embeddings",
+            "embedding_length": len(test_result),
+            "embedding_type": CURRENT_EMBEDDING_TYPE,
+            "chat_model": chat_model_info,
+            "status": "All systems operational! 🚀"
         })
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return jsonify({
             "success": False,
-            "error": str(e)
+            "error": str(e),
+            "help": "Install: pip install sentence-transformers"
         }), 500
 
-@app.route('/chatbot/upload', methods=['POST'])
+@app.route('/upload', methods=['POST'])
 def upload_pdfs():
     temp_files = []
     pdf_file_objects = []
     
     try:
+        print("=" * 60)
         print("PDF Chatbot upload endpoint called")
         
         if 'pdfs' not in request.files:
@@ -538,8 +691,10 @@ def upload_pdfs():
 
         return jsonify({
             "success": True,
-            "message": "PDFs processed successfully",
-            "num_chunks": len(text_chunks)
+            "message": f"✅ PDFs processed successfully using {CURRENT_EMBEDDING_TYPE} embeddings!",
+            "num_chunks": len(text_chunks),
+            "embedding_type": CURRENT_EMBEDDING_TYPE,
+            "note": "Embeddings are FREE and run locally"
         })
 
     except Exception as e:
@@ -562,9 +717,10 @@ def upload_pdfs():
             except:
                 pass
 
-@app.route('/chatbot/ask', methods=['POST'])
+@app.route('/ask', methods=['POST'])
 def ask_question():
     try:
+        print("=" * 60)
         print("PDF Chatbot ask endpoint called")
         
         data = request.get_json()
@@ -578,34 +734,39 @@ def ask_question():
         if not os.path.exists("faiss_index"):
             return jsonify({"success": False, "error": "No documents processed yet. Please upload PDFs first."}), 400
         
-        # Test API key first
-        try:
-            print("Testing Google API key...")
-            test_embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
-            # Simple test to see if API key works
-            test_result = test_embeddings.embed_query("test")
-            print("API key test successful")
-        except Exception as e:
-            print(f"API key test failed: {str(e)}")
-            return jsonify({"success": False, "error": f"Google API key issue: {str(e)}"}), 500
-        
         print("Loading embeddings...")
-        embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
+        try:
+            embeddings = get_embeddings()
+            print(f"✅ Loaded {CURRENT_EMBEDDING_TYPE} embeddings")
+        except Exception as e:
+            print(f"❌ Failed to load embeddings: {str(e)}")
+            return jsonify({
+                "success": False, 
+                "error": f"Embeddings failed: {str(e)}"
+            }), 500
         
         print("Loading FAISS index...")
         try:
             db = CommunityFAISS.load_local("faiss_index", embeddings, allow_dangerous_deserialization=True)
+            print("✅ FAISS index loaded")
         except Exception as e:
-            print(f"Error loading FAISS index: {str(e)}")
-            return jsonify({"success": False, "error": f"Error loading document index: {str(e)}"}), 500
+            print(f"❌ Error loading FAISS index: {str(e)}")
+            traceback.print_exc()
+            return jsonify({
+                "success": False, 
+                "error": "Error loading document index. Try re-uploading your PDFs."
+            }), 500
         
         print("Searching for similar documents...")
         try:
-            docs = db.similarity_search(question, k=3)  # Limit to 3 documents
-            print(f"Found {len(docs)} similar documents")
+            docs = db.similarity_search(question, k=3)
+            print(f"✅ Found {len(docs)} similar documents")
         except Exception as e:
-            print(f"Error in similarity search: {str(e)}")
-            return jsonify({"success": False, "error": f"Error searching documents: {str(e)}"}), 500
+            print(f"❌ Error in similarity search: {str(e)}")
+            return jsonify({
+                "success": False, 
+                "error": f"Error searching documents: {str(e)}"
+            }), 500
         
         if not docs:
             return jsonify({
@@ -616,9 +777,13 @@ def ask_question():
         print("Getting conversational chain...")
         try:
             chain = get_conversational_chain()
+            print("✅ Conversational chain initialized")
         except Exception as e:
-            print(f"Error getting conversational chain: {str(e)}")
-            return jsonify({"success": False, "error": f"Error initializing AI model: {str(e)}"}), 500
+            print(f"❌ Error getting conversational chain: {str(e)}")
+            return jsonify({
+                "success": False, 
+                "error": f"Error initializing AI model: {str(e)}"
+            }), 500
         
         print("Generating response...")
         try:
@@ -626,18 +791,22 @@ def ask_question():
                 {"input_documents": docs, "question": question},
                 return_only_outputs=True
             )
-            print("Response generated successfully")
+            print("✅ Response generated successfully")
             
             return jsonify({
                 "success": True,
                 "answer": response["output_text"]
             })
         except Exception as e:
-            print(f"Error generating response: {str(e)}")
-            return jsonify({"success": False, "error": f"Error generating response: {str(e)}"}), 500
+            print(f"❌ Error generating response: {str(e)}")
+            traceback.print_exc()
+            return jsonify({
+                "success": False, 
+                "error": f"Error generating response: {str(e)}"
+            }), 500
         
     except Exception as e:
-        print(f"Unexpected error in ask_question: {str(e)}")
+        print(f"❌ Unexpected error: {str(e)}")
         traceback.print_exc()
         return jsonify({"success": False, "error": f"Unexpected error: {str(e)}"}), 500
 
@@ -663,7 +832,7 @@ def create_pdf():
         scraped_content = ""
         successful_scrapes = 0
         
-        for i, url in enumerate(urls[:3]):  # Limit to first 3 URLs
+        for i, url in enumerate(urls[:3]):
             print(f"Scraping URL {i+1}: {url}")
             content = extract_article_content(url)
             if content and len(content) > 200:
@@ -671,12 +840,11 @@ def create_pdf():
                 successful_scrapes += 1
                 print(f"Successfully scraped {len(content)} characters")
             
-            # Add delay to avoid being blocked
             time.sleep(random.uniform(1, 3))
         
         print(f"Successfully scraped {successful_scrapes} sources")
         
-        # Step 3: Generate comprehensive content using AI
+        # Step 3: Generate content
         print("Generating AI content...")
         final_content = generate_ai_content(topic, scraped_content)
         
@@ -697,7 +865,6 @@ def create_pdf():
             
     except Exception as e:
         print(f"Error in PDF generation: {e}")
-        import traceback
         traceback.print_exc()
         return jsonify({"error": f"Server error: {str(e)}"}), 500
 
@@ -711,10 +878,10 @@ Introduction:
 This is a test PDF to verify that the PDF generation system is working correctly.
 
 Features:
-• Proper formatting
-• Multiple paragraphs
-• Bullet points
-• Headers and sections
+- Proper formatting
+- Multiple paragraphs
+- Bullet points
+- Headers and sections
 
 Technical Details:
 The PDF generation uses FPDF library with proper text encoding to ensure compatibility across different systems.

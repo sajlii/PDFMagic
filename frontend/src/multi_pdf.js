@@ -70,20 +70,30 @@ const KawaiiPDFChatbot = () => {
 
   const handleFileUpload = (event) => {
     const uploadedFiles = Array.from(event.target.files);
+    console.log('Files selected:', uploadedFiles.length);
+    
     const pdfFiles = uploadedFiles.filter(file => file.type === 'application/pdf');
     
     if (pdfFiles.length !== uploadedFiles.length) {
       alert('Please upload only PDF files!');
     }
     
-    setFiles(prevFiles => [...prevFiles, ...pdfFiles]);
+    if (pdfFiles.length > 0) {
+      console.log('Adding PDF files:', pdfFiles);
+      setFiles(prevFiles => [...prevFiles, ...pdfFiles]);
+    }
   };
 
   const removeFile = (indexToRemove) => {
+    console.log('Removing file at index:', indexToRemove);
     setFiles(prevFiles => prevFiles.filter((_, index) => index !== indexToRemove));
   };
 
   const handleProcessFiles = async () => {
+    console.log('=== Starting handleProcessFiles ===');
+    console.log('Current files state:', files);
+    console.log('Number of files:', files.length);
+    
     if (files.length === 0) {
       alert('Please upload at least one PDF file!');
       return;
@@ -94,9 +104,24 @@ const KawaiiPDFChatbot = () => {
 
     try {
       const formData = new FormData();
-      files.forEach(file => {
-        formData.append("pdfs", file);
+      
+      // Add files to FormData with detailed logging
+      files.forEach((file, index) => {
+        console.log(`Adding file ${index + 1}:`, {
+          name: file.name,
+          type: file.type,
+          size: file.size
+        });
+        formData.append("pdfs", file, file.name);
       });
+
+      // Verify FormData contents
+      console.log('FormData contents:');
+      for (let pair of formData.entries()) {
+        console.log(pair[0], ':', pair[1]);
+      }
+
+      console.log('Sending POST request to http://localhost:5000/upload');
 
       const response = await axios.post("http://localhost:5000/upload", formData, {
         headers: {
@@ -104,6 +129,8 @@ const KawaiiPDFChatbot = () => {
         },
         timeout: 30000,
       });
+
+      console.log('Server response:', response.data);
 
       if (response.data.success) {
         setIsProcessed(true);
@@ -117,7 +144,12 @@ const KawaiiPDFChatbot = () => {
         throw new Error(response.data.error || 'Upload failed');
       }
     } catch (error) {
-      console.error("Upload failed:", error);
+      console.error("=== Upload Error ===");
+      console.error("Error object:", error);
+      console.error("Error message:", error.message);
+      console.error("Response data:", error.response?.data);
+      console.error("Response status:", error.response?.status);
+      
       const errorMessage = error.response?.data?.error || error.message || 'Upload failed';
       setMessages([{
         type: 'system',
@@ -126,13 +158,19 @@ const KawaiiPDFChatbot = () => {
       }]);
     } finally {
       setIsProcessing(false);
+      console.log('=== handleProcessFiles completed ===');
     }
   };
 
   const clearFiles = () => {
+    console.log('Clearing all files');
     setFiles([]);
     setIsProcessed(false);
     setMessages([]);
+    // Reset file input
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
   };
 
   const handleSendMessage = async () => {
@@ -230,13 +268,18 @@ const KawaiiPDFChatbot = () => {
   const handleDrop = (e) => {
     e.preventDefault();
     const droppedFiles = Array.from(e.dataTransfer.files);
+    console.log('Files dropped:', droppedFiles.length);
+    
     const pdfFiles = droppedFiles.filter(file => file.type === 'application/pdf');
     
     if (pdfFiles.length !== droppedFiles.length) {
       alert('Please upload only PDF files!');
     }
     
-    setFiles(prevFiles => [...prevFiles, ...pdfFiles]);
+    if (pdfFiles.length > 0) {
+      console.log('Adding dropped PDF files:', pdfFiles);
+      setFiles(prevFiles => [...prevFiles, ...pdfFiles]);
+    }
   };
 
   return (
@@ -339,7 +382,7 @@ const KawaiiPDFChatbot = () => {
               {files.length > 0 && (
                 <div className="kawaii-files-section">
                   <div className="kawaii-files-header">
-                    <h3>Uploaded Files ✨</h3>
+                    <h3>Uploaded Files ✨ ({files.length})</h3>
                     <button onClick={clearFiles} className="kawaii-clear-btn">
                       Clear All
                     </button>
@@ -350,7 +393,10 @@ const KawaiiPDFChatbot = () => {
                         <FileText className="kawaii-file-icon" />
                         <span className="kawaii-file-name">{file.name}</span>
                         <button
-                          onClick={() => removeFile(index)}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            removeFile(index);
+                          }}
                           className="kawaii-remove-btn"
                         >
                           <X className="kawaii-x-icon" />

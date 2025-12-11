@@ -1,0 +1,6 @@
+{
+  "embedding_type": "Ollama",
+  "created_at": "2025-11-29 10:57:18",
+  "vector_dimension": 4096,
+  "num_chunks": 1
+}

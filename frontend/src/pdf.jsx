@@ -78,7 +78,10 @@ function App() {
     setShowPreview(false);
 
     try {
-      const response = await fetch('http://localhost:5000/generate_pdf', {
+      console.log('Sending request to:', 'http://localhost:5000/creator/generate_pdf');
+      console.log('Topic:', topic);
+      
+      const response = await fetch('http://localhost:5000/creator/generate_pdf', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -86,13 +89,27 @@ function App() {
         body: JSON.stringify({ topic }),
       });
 
+      console.log('Response status:', response.status);
+      console.log('Response ok:', response.ok);
+
       if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || 'Failed to generate PDF');
+        let errorMessage = 'Failed to generate PDF';
+        try {
+          const errorData = await response.json();
+          errorMessage = errorData.error || errorMessage;
+        } catch (e) {
+          errorMessage = `Server error: ${response.status}`;
+        }
+        throw new Error(errorMessage);
       }
 
       // Get the PDF as blob
       const blob = await response.blob();
+      console.log('Received blob, size:', blob.size);
+      
+      if (blob.size === 0) {
+        throw new Error('Received empty PDF file');
+      }
       
       // Create URL for the blob
       const url = URL.createObjectURL(blob);
