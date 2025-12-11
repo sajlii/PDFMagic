@@ -1,8 +1,6 @@
 # Flask and CORS
-# Flask and CORS
 Flask==2.3.2
 Flask-Cors==3.0.10
-
 
 # Environment
 python-dotenv==1.0.0
@@ -17,23 +15,23 @@ beautifulsoup4==4.12.2
 urllib3==2.0.4
 
 # NLP / Embeddings
-sentence-transformers==2.2.2   # for HuggingFace embeddings
-torch==2.5.1          # CPU version for compatibility (adjust if GPU available)
-transformers==4.34.1         # required by sentence-transformers
+sentence-transformers==2.2.2
+torch==2.5.1
+transformers==4.34.1
 
 # LangChain + Vector Stores
 langchain==1.1.3
-faiss-cpu==1.13.1               # FAISS local vector store
-langchain-llama==0.1.1       # Ollama / LLaMA integration if used
-langchain-google-genai==4.0.0
+faiss-cpu==1.13.1
+langchain-google-genai==2.0.4
 langchain-community==0.4.1
 
 # Optional AI
-google-generativeai==0.8.5  # Google Gemini / GenAI client
+google-generativeai==0.8.5
 
 # Utilities
 unicodedata2==17.0.0
-tensorflow==2.20.0
 numpy>=1.24.0,<2.2.0
 protobuf==4.24.3
 
+# Production server
+gunicorn==21.2.0
