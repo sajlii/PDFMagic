@@ -18,7 +18,7 @@ urllib3==2.0.4
 
 # NLP / Embeddings
 sentence-transformers==2.2.2   # for HuggingFace embeddings
-torch==2.1.0+cpu               # CPU version for compatibility (adjust if GPU available)
+torch==2.9.1              # CPU version for compatibility (adjust if GPU available)
 transformers==4.34.0           # required by sentence-transformers
 
 # LangChain + Vector Stores
